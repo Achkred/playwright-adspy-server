@@ -1,95 +1,52 @@
 import express, { Request, Response, NextFunction } from 'express';
-import { scrapeAdLibrary, ScrapeOptions } from './scraper';
+import { scrapeAdLibrary } from './scraper';
 
 const app = express();
 app.use(express.json());
 
-// Get API key from environment
 const API_KEY = process.env.PLAYWRIGHT_API_KEY;
 
-// Authentication middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
-  // Skip auth for health check
-  if (req.path === '/health') {
-    return next();
-  }
-  
+// Health check - NO auth required
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({ 
+    status: 'ok', 
+    browser: 'chromium',
+    timestamp: new Date().toISOString() 
+  });
+});
+
+// Auth middleware for other routes
+const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
   const authKey = req.headers['x-api-key'] || req.body?.apiKey;
   if (!API_KEY || authKey !== API_KEY) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
-});
+};
 
-// Health check endpoint
-app.get('/health', (req: Request, res: Response) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    message: 'Playwright server is running'
-  });
-});
-
-// Main scraping endpoint
-app.post('/scrape', async (req: Request, res: Response) => {
-  const startTime = Date.now();
-  
+app.post('/scrape', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const { 
-      keyword, 
-      country = 'US', 
-      maxAds = 50, 
-      scrollCount = 5 
-    } = req.body;
+    const { keyword, country = 'US', maxAds = 50, scrollCount = 5 } = req.body;
     
-    // Validate input
-    if (!keyword || typeof keyword !== 'string') {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'keyword is required and must be a string' 
-      });
+    if (!keyword) {
+      return res.status(400).json({ error: 'keyword is required' });
     }
     
-    console.log(`[SCRAPE] Starting: keyword="${keyword}", country=${country}, maxAds=${maxAds}`);
+    console.log(`Starting scrape: keyword="${keyword}", country="${country}", maxAds=${maxAds}`);
     
-    const options: ScrapeOptions = { 
-      keyword: keyword.trim(), 
-      country, 
-      maxAds, 
-      scrollCount 
-    };
+    const result = await scrapeAdLibrary({ keyword, country, maxAds, scrollCount });
     
-    const result = await scrapeAdLibrary(options);
+    console.log(`Scrape complete: found ${result.ads.length} ads, rateLimited=${result.rateLimited}`);
     
-    const duration = Date.now() - startTime;
-    console.log(`[SCRAPE] Completed: ${result.ads.length} ads found in ${duration}ms`);
-    
-    res.json({ 
-      success: true, 
-      ...result,
-      adsFound: result.ads.length,
-      durationMs: duration
-    });
-    
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[SCRAPE] Error:', errorMessage);
-    
-    res.status(500).json({ 
-      success: false, 
-      error: errorMessage,
-      ads: [],
-      rateLimited: false
-    });
+    res.json({ success: true, ...result, adsFound: result.ads.length });
+  } catch (error: any) {
+    console.error('Scrape error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Start server
+// CRITICAL: Use process.env.PORT and bind to 0.0.0.0
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`========================================`);
-  console.log(`Playwright Ad Spy Server`);
-  console.log(`Running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`========================================`);
+app.listen(Number(PORT), '0.0.0.0', () => {
+  console.log(`Playwright server listening on 0.0.0.0:${PORT}`);
 });
